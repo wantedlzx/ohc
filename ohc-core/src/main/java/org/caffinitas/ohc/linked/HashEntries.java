@@ -20,39 +20,16 @@ package org.caffinitas.ohc.linked;
  */
 final class HashEntries
 {
-    static void init(long hash, long keyLen, long valueLen, long hashEntryAdr, int sentinel, long expireAt)
+    static void init(long hash, int keyLen, int valueLen, long hashEntryAdr, int sentinel, long expireAt)
     {
         Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_EXPIRE_AT, expireAt);
         Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_HASH, hash);
         setNext(hashEntryAdr, 0L);
-        Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_KEY_LENGTH, keyLen);
-        Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_VALUE_LENGTH, valueLen);
+        Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_KEY_LENGTH, keyLen);
+        Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_VALUE_LENGTH, valueLen);
         Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_REFCOUNT, 1);
+        Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_GENERATION, Util.GEN_EDEN);
         Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_SENTINEL, sentinel);
-    }
-
-    static boolean compareKey(long hashEntryAdr, KeyBuffer key, long serKeyLen)
-    {
-        if (hashEntryAdr == 0L)
-            return false;
-
-        long blkOff = Util.ENTRY_OFF_DATA;
-        int p = 0;
-        byte[] arr = key.array();
-        for (; p <= serKeyLen - 8; p += 8, blkOff += 8)
-            if (Uns.getLong(hashEntryAdr, blkOff) != Uns.getLongFromByteArray(arr, p))
-                return false;
-        for (; p <= serKeyLen - 4; p += 4, blkOff += 4)
-            if (Uns.getInt(hashEntryAdr, blkOff) != Uns.getIntFromByteArray(arr, p))
-                return false;
-        for (; p <= serKeyLen - 2; p += 2, blkOff += 2)
-            if (Uns.getShort(hashEntryAdr, blkOff) != Uns.getShortFromByteArray(arr, p))
-                return false;
-        for (; p < serKeyLen; p++, blkOff++)
-            if (Uns.getByte(hashEntryAdr, blkOff) != arr[p])
-                return false;
-
-        return true;
     }
 
     static boolean compare(long hashEntryAdr, long offset, long otherHashEntryAdr, long otherOffset, long len)
@@ -142,14 +119,14 @@ final class HashEntries
             Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_NEXT, nextAdr);
     }
 
-    static long getKeyLen(long hashEntryAdr)
+    static int getKeyLen(long hashEntryAdr)
     {
-        return Uns.getLong(hashEntryAdr, Util.ENTRY_OFF_KEY_LENGTH);
+        return Uns.getInt(hashEntryAdr, Util.ENTRY_OFF_KEY_LENGTH);
     }
 
-    static long getValueLen(long hashEntryAdr)
+    static int getValueLen(long hashEntryAdr)
     {
-        return Uns.getLong(hashEntryAdr, Util.ENTRY_OFF_VALUE_LENGTH);
+        return Uns.getInt(hashEntryAdr, Util.ENTRY_OFF_VALUE_LENGTH);
     }
 
     static long getExpireAt(long hashEntryAdr)
@@ -160,6 +137,16 @@ final class HashEntries
     static void setExpireAt(long hashEntryAdr, long expireAt)
     {
         Uns.putLong(hashEntryAdr, Util.ENTRY_OFF_EXPIRE_AT, expireAt);
+    }
+
+    static int getGeneration(long hashEntryAdr)
+    {
+        return Uns.getInt(hashEntryAdr, Util.ENTRY_OFF_GENERATION);
+    }
+
+    static void setGeneration(long hashEntryAdr, int generation)
+    {
+        Uns.putInt(hashEntryAdr, Util.ENTRY_OFF_GENERATION, generation);
     }
 
     static long getAllocLen(long hashEntryAdr)
@@ -174,7 +161,7 @@ final class HashEntries
 
     static boolean dereference(long hashEntryAdr)
     {
-        if (Uns.decrement(hashEntryAdr, Util.ENTRY_OFF_REFCOUNT))
+        if (hashEntryAdr != 0L && Uns.decrement(hashEntryAdr, Util.ENTRY_OFF_REFCOUNT))
         {
             Uns.free(hashEntryAdr);
             return true;

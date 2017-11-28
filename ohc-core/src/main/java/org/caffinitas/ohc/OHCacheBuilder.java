@@ -15,10 +15,10 @@
  */
 package org.caffinitas.ohc;
 
-import java.lang.reflect.InvocationTargetException;
 import java.util.concurrent.ScheduledExecutorService;
 
-import org.caffinitas.ohc.linked.OHCacheImpl;
+import org.caffinitas.ohc.chunked.OHCacheChunkedImpl;
+import org.caffinitas.ohc.linked.OHCacheLinkedImpl;
 
 /**
  * Configures and builds OHC instance.
@@ -64,14 +64,22 @@ import org.caffinitas.ohc.linked.OHCacheImpl;
  *         <td>16 MB * number of CPUs ({@code java.lang.Runtime.availableProcessors()}), minimum 64 MB</td>
  *     </tr>
  *     <tr>
+ *         <td>{@code chunkSize}</td>
+ *         <td>If set and positive, the <i>chunked</i> implementation will be used and each segment
+ *         will be divided into this amount of chunks.</td>
+ *         <td>{@code 0} - i.e. <i>linked</i> implementation will be used</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code fixedEntrySize}</td>
+ *         <td>If set and positive, the <i>chunked</i> implementation with fixed sized entries
+ *         will be used. The parameter {@code chunkSize} must be set for fixed-sized entries.</td>
+ *         <td>{@code 0} - i.e. <i>linked</i> implementation will be used,
+ *         if {@code chunkSize} is also {@code 0}</td>
+ *     </tr>
+ *     <tr>
  *         <td>{@code maxEntrySize}</td>
  *         <td>Maximum size of a hash entry (including header, serialized key + serialized value)</td>
  *         <td>(not set, defaults to capacity divided by number of segments)</td>
- *     </tr>
- *     <tr>
- *         <td>{@code bucketLength}</td>
- *         <td>(For tables implementation only) Number of entries per bucket.</td>
- *         <td>{@code 8}</td>
  *     </tr>
  *     <tr>
  *         <td>{@code throwOOME}</td>
@@ -108,6 +116,41 @@ import org.caffinitas.ohc.linked.OHCacheImpl;
  *         <td>The amount of time in milliseconds for each timeouts-slot.</td>
  *         <td>{@code 128}</td>
  *     </tr>
+ *     <tr>
+ *         <td>{@code ticker}</td>
+ *         <td>Indirection for current time - used for unit tests.</td>
+ *         <td>Default ticker using {@code System.nanoTime()} and {@code System.currentTimeMillis()}</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code capacity}</td>
+ *         <td>Expected number of elements in the cache</td>
+ *         <td>No default value, recommended to provide a default value.</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code eviction}</td>
+ *         <td>Choose the eviction algorithm to use. Available are:
+ *         <ul>
+ *             <li>{@link Eviction#LRU LRU}: Plain LRU - least used entry is subject to eviction</li>
+ *             <li>{@link Eviction#W_TINY_LFU W-WinyLFU}: Enable use of Window Tiny-LFU. The size of the
+ *             frequency sketch ("admission filter") is set to the value of {@code hashTableSize}.
+ *             See <a href="http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html">this article</a>
+ *             for a description.</li>
+ *             <li>{@link Eviction#NONE None}: No entries will be evicted - this effectively provides a
+ *             capacity-bounded off-heap map.</li>
+ *         </ul>
+ *         </td>
+ *         <td>{@code LRU}</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code frequencySketchSize}</td>
+ *         <td>Size of the frequency sketch used by {@link Eviction#W_TINY_LFU W-WinyLFU}</td>
+ *         <td>Defaults to {@code hashTableSize}.</td>
+ *     </tr>
+ *     <tr>
+ *         <td>{@code edenSize}</td>
+ *         <td>Size of the eden generation used by {@link Eviction#W_TINY_LFU W-WinyLFU} relative to a segment's size</td>
+ *         <td>{@code 0.2}</td>
+ *     </tr>
  * </table>
  * <p>
  *     You may also use system properties prefixed with {@code org.caffinitas.org.} to other defaults.
@@ -121,20 +164,26 @@ public class OHCacheBuilder<K, V>
 {
     private int segmentCount;
     private int hashTableSize = 8192;
-    private int bucketLength = 8;
     private long capacity;
+    private int chunkSize;
     private CacheSerializer<K> keySerializer;
     private CacheSerializer<V> valueSerializer;
     private float loadFactor = .75f;
+    private int fixedKeySize;
+    private int fixedValueSize;
     private long maxEntrySize;
-    private Class<? extends OHCache> type = OHCacheImpl.class;
     private ScheduledExecutorService executorService;
     private boolean throwOOME;
     private HashAlgorithm hashAlgorighm = HashAlgorithm.MURMUR3;
     private boolean unlocked;
     private long defaultTTLmillis;
+    private boolean timeouts;
     private int timeoutsSlots;
     private int timeoutsPrecision;
+    private Ticker ticker = Ticker.DEFAULT;
+    private Eviction eviction = Eviction.LRU;
+    private int frequencySketchSize;
+    private double edenSize = 0.2d;
 
     private OHCacheBuilder()
     {
@@ -145,33 +194,20 @@ public class OHCacheBuilder<K, V>
 
         segmentCount = fromSystemProperties("segmentCount", segmentCount);
         hashTableSize = fromSystemProperties("hashTableSize", hashTableSize);
-        bucketLength = fromSystemProperties("bucketLength", bucketLength);
         capacity = fromSystemProperties("capacity", capacity);
+        chunkSize = fromSystemProperties("chunkSize", chunkSize);
         loadFactor = fromSystemProperties("loadFactor", loadFactor);
         maxEntrySize = fromSystemProperties("maxEntrySize", maxEntrySize);
         throwOOME = fromSystemProperties("throwOOME", throwOOME);
         hashAlgorighm = HashAlgorithm.valueOf(fromSystemProperties("hashAlgorighm", hashAlgorighm.name()));
         unlocked = fromSystemProperties("unlocked", unlocked);
         defaultTTLmillis = fromSystemProperties("defaultTTLmillis", defaultTTLmillis);
+        timeouts = fromSystemProperties("timeouts", timeouts);
         timeoutsSlots = fromSystemProperties("timeoutsSlots", timeoutsSlots);
         timeoutsPrecision = fromSystemProperties("timeoutsPrecision", timeoutsPrecision);
-        String t = fromSystemProperties("type", null);
-        if (t != null)
-            try
-            {
-                type = (Class<? extends OHCache>) Class.forName(t);
-            }
-            catch (ClassNotFoundException x)
-            {
-                try
-                {
-                    type = (Class<? extends OHCache>) Class.forName("org.caffinitas.ohc." + t + ".OHCacheImpl");
-                }
-                catch (ClassNotFoundException e)
-                {
-                    throw new RuntimeException(e);
-                }
-            }
+        eviction = fromSystemProperties("eviction", eviction, Eviction.class);
+        frequencySketchSize = fromSystemProperties("frequencySketchSize", frequencySketchSize);
+        edenSize = fromSystemProperties("edenSize", edenSize);
     }
 
     public static final String SYSTEM_PROPERTY_PREFIX = "org.caffinitas.ohc.";
@@ -212,6 +248,18 @@ public class OHCacheBuilder<K, V>
         }
     }
 
+    private static double fromSystemProperties(String name, double defaultValue)
+    {
+        try
+        {
+            return Double.parseDouble(System.getProperty(SYSTEM_PROPERTY_PREFIX + name, Double.toString(defaultValue)));
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException("Failed to parse system property " + SYSTEM_PROPERTY_PREFIX + name, e);
+        }
+    }
+
     private static boolean fromSystemProperties(String name, boolean defaultValue)
     {
         try
@@ -229,6 +277,12 @@ public class OHCacheBuilder<K, V>
         return System.getProperty(SYSTEM_PROPERTY_PREFIX + name, defaultValue);
     }
 
+    private static <E extends Enum> E fromSystemProperties(String name, E defaultValue, Class<E> type)
+    {
+        String value = fromSystemProperties(name, defaultValue.name());
+        return (E) Enum.valueOf(type, value.toUpperCase());
+    }
+
     static int roundUpToPowerOf2(int number, int max)
     {
         return number >= max
@@ -243,25 +297,9 @@ public class OHCacheBuilder<K, V>
 
     public OHCache<K, V> build()
     {
-        try
-        {
-            return type.getDeclaredConstructor(OHCacheBuilder.class).newInstance(this);
-        }
-        catch (InstantiationException | IllegalAccessException | NoSuchMethodException | InvocationTargetException e)
-        {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public Class<? extends OHCache> getType()
-    {
-        return type;
-    }
-
-    public OHCacheBuilder<K, V> type(Class<? extends OHCache> type)
-    {
-        this.type = type;
-        return this;
+        if (fixedKeySize > 0 || fixedValueSize > 0|| chunkSize > 0)
+            return new OHCacheChunkedImpl<>(this);
+        return new OHCacheLinkedImpl<>(this);
     }
 
     public int getHashTableSize()
@@ -271,18 +309,22 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> hashTableSize(int hashTableSize)
     {
+        if (hashTableSize < -1)
+            throw new IllegalArgumentException("hashTableSize:" + hashTableSize);
         this.hashTableSize = hashTableSize;
         return this;
     }
 
-    public int getBucketLength()
+    public int getChunkSize()
     {
-        return bucketLength;
+        return chunkSize;
     }
 
-    public OHCacheBuilder<K, V> bucketLength(int bucketLength)
+    public OHCacheBuilder<K, V> chunkSize(int chunkSize)
     {
-        this.bucketLength = bucketLength;
+        if (chunkSize < -1)
+            throw new IllegalArgumentException("chunkSize:" + chunkSize);
+        this.chunkSize = chunkSize;
         return this;
     }
 
@@ -293,6 +335,8 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> capacity(long capacity)
     {
+        if (capacity <= 0)
+            throw new IllegalArgumentException("capacity:" + capacity);
         this.capacity = capacity;
         return this;
     }
@@ -326,6 +370,8 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> segmentCount(int segmentCount)
     {
+        if (segmentCount < -1)
+            throw new IllegalArgumentException("segmentCount:" + segmentCount);
         this.segmentCount = segmentCount;
         return this;
     }
@@ -337,6 +383,8 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> loadFactor(float loadFactor)
     {
+        if (loadFactor <= 0f)
+            throw new IllegalArgumentException("loadFactor:" + loadFactor);
         this.loadFactor = loadFactor;
         return this;
     }
@@ -348,7 +396,29 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> maxEntrySize(long maxEntrySize)
     {
+        if (maxEntrySize < 0)
+            throw new IllegalArgumentException("maxEntrySize:" + maxEntrySize);
         this.maxEntrySize = maxEntrySize;
+        return this;
+    }
+
+    public int getFixedKeySize()
+    {
+        return fixedKeySize;
+    }
+
+    public int getFixedValueSize()
+    {
+        return fixedValueSize;
+    }
+
+    public OHCacheBuilder<K, V> fixedEntrySize(int fixedKeySize, int fixedValueSize)
+    {
+        if ((fixedKeySize > 0 || fixedValueSize > 0) &&
+            (fixedKeySize <= 0 || fixedValueSize <= 0))
+            throw new IllegalArgumentException("fixedKeySize:" + fixedKeySize+",fixedValueSize:" + fixedValueSize);
+        this.fixedKeySize = fixedKeySize;
+        this.fixedValueSize = fixedValueSize;
         return this;
     }
 
@@ -370,6 +440,8 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> hashMode(HashAlgorithm hashMode)
     {
+        if (hashMode == null)
+            throw new NullPointerException("hashMode");
         this.hashAlgorighm = hashMode;
         return this;
     }
@@ -407,6 +479,17 @@ public class OHCacheBuilder<K, V>
         return this;
     }
 
+    public boolean isTimeouts()
+    {
+        return timeouts;
+    }
+
+    public OHCacheBuilder<K, V> timeouts(boolean timeouts)
+    {
+        this.timeouts = timeouts;
+        return this;
+    }
+
     public int getTimeoutsSlots()
     {
         return timeoutsSlots;
@@ -414,6 +497,8 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> timeoutsSlots(int timeoutsSlots)
     {
+        if (timeoutsSlots > 0)
+            this.timeouts = true;
         this.timeoutsSlots = timeoutsSlots;
         return this;
     }
@@ -425,7 +510,53 @@ public class OHCacheBuilder<K, V>
 
     public OHCacheBuilder<K, V> timeoutsPrecision(int timeoutsPrecision)
     {
+        if (timeoutsPrecision > 0)
+            this.timeouts = true;
         this.timeoutsPrecision = timeoutsPrecision;
+        return this;
+    }
+
+    public Ticker getTicker()
+    {
+        return ticker;
+    }
+
+    public OHCacheBuilder<K, V> ticker(Ticker ticker)
+    {
+        this.ticker = ticker;
+        return this;
+    }
+
+    public Eviction getEviction()
+    {
+        return eviction;
+    }
+
+    public OHCacheBuilder<K, V> eviction(Eviction eviction)
+    {
+        this.eviction = eviction;
+        return this;
+    }
+
+    public int getFrequencySketchSize()
+    {
+        return frequencySketchSize;
+    }
+
+    public OHCacheBuilder<K, V> frequencySketchSize(int frequencySketchSize)
+    {
+        this.frequencySketchSize = frequencySketchSize;
+        return this;
+    }
+
+    public double getEdenSize()
+    {
+        return edenSize;
+    }
+
+    public OHCacheBuilder<K, V> edenSize(double edenSize)
+    {
+        this.edenSize = edenSize;
         return this;
     }
 }

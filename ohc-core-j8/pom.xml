@@ -5,12 +5,12 @@
     <parent>
         <groupId>org.caffinitas.ohc</groupId>
         <artifactId>ohc-parent</artifactId>
-        <version>0.5.0-SNAPSHOT</version>
+        <version>0.6.2-SNAPSHOT</version>
         <relativePath>..</relativePath>
     </parent>
 
     <artifactId>ohc-core-j8</artifactId>
-    <version>0.5.0-SNAPSHOT</version>
+    <version>0.6.2-SNAPSHOT</version>
 
     <name>OHC core - Java8 optimization</name>
     <description>Off-Heap concurrent hash map intended to store GBs of serialized data</description>
@@ -86,8 +86,20 @@
         </dependency>
 
         <dependency>
+            <groupId>net.jpountz.lz4</groupId>
+            <artifactId>lz4</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.testng</groupId>
             <artifactId>testng</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>java-hamcrest</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -109,6 +121,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <version>${version.org.apache.maven.plugins.maven-surefire-plugin}</version>
                 <configuration>
                     <systemProperties>
                         <org.caffinitas.ohc.disableJEmalloc>false</org.caffinitas.ohc.disableJEmalloc>
@@ -124,6 +137,7 @@
             <plugin>
                 <groupId>org.apache.felix</groupId>
                 <artifactId>maven-bundle-plugin</artifactId>
+                <version>${version.org.apache.felix.maven-bundle-plugin}</version>
                 <extensions>true</extensions>
                 <executions>
                     <execution>
@@ -148,5 +162,69 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- same profiles as in ohc-core -->
+    <profiles>
+        <profile>
+            <id>unsafe</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <version>${version.org.apache.maven.plugins.maven-surefire-plugin}</version>
+                        <executions>
+                            <execution>
+                                <id>unsafe</id>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                                <configuration>
+                                    <systemProperties>
+                                        <org.caffinitas.ohc.allocator>unsafe</org.caffinitas.ohc.allocator>
+                                        <org.caffinitas.ohc.debugOffHeapAccess>true</org.caffinitas.ohc.debugOffHeapAccess>
+                                    </systemProperties>
+                                    <reportsDirectory>${project.build.directory}/surefire-reports/unsafe</reportsDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>prod-like</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <version>${version.org.apache.maven.plugins.maven-surefire-plugin}</version>
+                        <executions>
+                            <execution>
+                                <id>unsafe</id>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                                <configuration>
+                                    <systemProperties>
+                                        <org.caffinitas.ohc.allocator>jna</org.caffinitas.ohc.allocator>
+                                        <org.caffinitas.ohc.debugOffHeapAccess>false</org.caffinitas.ohc.debugOffHeapAccess>
+                                    </systemProperties>
+                                    <reportsDirectory>${project.build.directory}/surefire-reports/prod-like</reportsDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>
